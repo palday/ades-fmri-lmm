@@ -1,24 +1,54 @@
 using CSV
+using CategoricalArrays
 using DataFrames
 using MixedModels
+using StandardizedPredictors
 
-dat = DataFrame(CSV.File("slice.csv"; missingstrings=["NA","","NaN"]))
-select!(dat, Not(:Column1))
-dat = stack(dat, Not([:subjectID, :sex, :age, :ethnicity, :YoE, :YoE_labels, :inc_par, :income_labels, :scanner, :timepoint]);
-      variable_name=:roi,
-      value_name=:connectivity)
+using MKL
 
-# ROI has so many levels -- this really should be a random effect
-# and already is, so we cut it from the FE, see also https://www.muscardinus.be/2017/08/fixed-and-random/
-# this slice only has a single timepoint, so we also drop the timepoint predictor
-form = @formula(connectivity ~ 1 + (1| subjectID) + (1| subjectID&roi))
+# R-code provided by JA
+# library(tidyverse)
+# tot.add <- read_csv("tot.add.csv")
 
-contr = Dict(:roi => Grouping(),
-             :subjectID => Grouping())
+# tot <- tot.add %>%
+#   select(-1) %>%
+#   gather(region, conn, -(subjectID:scanner), -(timepoint)) %>%
+#   mutate(timepoint.nu = as.numeric(timepoint),
+#          timepoint = as.character(timepoint),
+#          timepoint.nu = scale(timepoint.nu, center = TRUE, scale = FALSE))
+
+dat = DataFrame(CSV.File("tot.add.csv"; missingstrings=["NA","","NaN"]))
+select!(dat, Not([:Column1, :X1]))
+dat = stack(dat,
+            Not([:subjectID, :sex, :age, :ethnicity, :YoE, :YoE_labels, :inc_par, :income_labels, :scanner, :timepoint]);
+            variable_name=:region, value_name=:conn)
+transform!(dat, :subjectID => compress ∘ categorical,
+                :sex => compress ∘ categorical,
+                :ethnicity => compress ∘ categorical,
+                :YoE_labels => compress ∘ categorical,
+                :income_labels => compress ∘ categorical,
+                :region => compress ∘ categorical;
+           renamecols=false)
+
+form = @formula(conn ~ 1 + timepoint + (1+timepoint|subjectID) + (1+timepoint|region))
+
+numeric = Dict(:timepoint => Center(2),
+               :region => Grouping(),
+               :subjectID => Grouping())
 
 # let's see if we can even construct a big model
-mod = LinearMixedModel(form, dat; contrasts=contr)
+@time mod_numeric = LinearMixedModel(form, dat; contrasts=numeric)
+GC.gc(true)
+# seems to work, let's fit
+@time fit!(mod_numeric)
+
+
+categoric = Dict(:timepoint => HelmertCoding(),
+                 :region => Grouping(),
+                 :subjectID => Grouping())
+
+# let's see if we can even construct a big model
+@time mod_categoric = LinearMixedModel(form, dat; contrasts=categoric)
 
 # seems to work, let's fit
-@time fit!(mod)
-
+@time fit!(mod_categoric)
